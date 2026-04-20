@@ -1,16 +1,30 @@
 <?php
 /**
- * CINE XPERIENCE - CONFIGURACIÓN Y FUNCIONES COMPARTIDAS v2.7
- * CON MIGRACIÓN AUTOMÁTICA DE DATOS ANTIGUOS
+ * CINE XPERIENCE - CONFIGURACIÓN Y FUNCIONES COMPARTIDAS v2.7 (EDICIÓN RENDER)
+ * ADAPTADO PARA POSTGRESQL Y VARIABLES DE ENTORNO
  */
 
 // ===========================
-// CONFIGURACIÓN DEL SISTEMA
+// CONFIGURACIÓN DEL SISTEMA (RENDER / VARIABLES DE ENTORNO)
 // ===========================
-define('DB_HOST', 'sql100.infinityfree.com');
-define('DB_USER', 'if0_41589040');
-define('DB_PASS', 'a2Sxe9qwH7riwcn');
-define('DB_NAME', 'if0_41589040_db');
+// Leemos la URL de conexión que Render nos da automáticamente
+$dbUrl = getenv('DATABASE_URL');
+
+if ($dbUrl) {
+    // Procesamos la URL de Postgres (postgres://user:pass@host:port/dbname)
+    $dbParams = parse_url($dbUrl);
+    define('DB_HOST', $dbParams['host']);
+    define('DB_PORT', $dbParams['port'] ?? 5432);
+    define('DB_USER', $dbParams['user']);
+    define('DB_PASS', $dbParams['pass']);
+    define('DB_NAME', ltrim($dbParams['path'], '/'));
+} else {
+    // Valores por defecto (locales) si no hay variable de entorno
+    define('DB_HOST', 'localhost');
+    define('DB_USER', 'postgres');
+    define('DB_PASS', '');
+    define('DB_NAME', 'cinexperience');
+}
 
 // ===========================
 // CONFIGURACIÓN DE SEGURIDAD AVANZADA
@@ -28,7 +42,8 @@ define('ANTI_REDIRECT_WINDOW', 2500);
 // ===========================
 // PROTECCIÓN DE DOMINIO
 // ===========================
-define('DOMINIO_PERMITIDO', 'MovieFrame.ct.ws');
+// IMPORTANTE: Cambia esto a tu URL de .onrender.com cuando la tengas
+define('DOMINIO_PERMITIDO', getenv('RENDER_EXTERNAL_HOSTNAME') ?: 'localhost');
 define('DOMINIOS_PERMITIDOS_ADICIONALES', []);
 define('ACCION_DOMINIO_NO_AUTORIZADO', 'bloquear');
 define('URL_REDIRECCION_DOMINIO', 'https://google.com');
@@ -207,187 +222,59 @@ function verificarRateLimit($ip, $maxRequests = MAX_REQUESTS_PER_MINUTE) {
 }
 
 // ===========================
-// FUNCIÓN DE MIGRACIÓN DE DATOS ANTIGUOS
-// ===========================
-function migrarDatosAntiguos($pdo) {
-    $mensajes = [];
-    
-    try {
-        // Verificar si la tabla seccion_peliculas existe y tiene datos
-        $check = $pdo->query("SHOW TABLES LIKE 'seccion_peliculas'");
-        if ($check->rowCount() > 0) {
-            // Obtener todos los nombres de columna de seccion_peliculas
-            $cols = $pdo->query("SHOW COLUMNS FROM seccion_peliculas")->fetchAll(PDO::FETCH_COLUMN);
-            
-            // Determinar qué columna contiene el nombre de la sección
-            $nombreCol = null;
-            $iframeCol = null;
-            
-            foreach ($cols as $col) {
-                if (stripos($col, 'nombre') !== false || stripos($col, 'seccion') !== false) {
-                    $nombreCol = $col;
-                }
-                if (stripos($col, 'iframe') !== false || stripos($col, 'pelicula') !== false || $col === 'id_pelicula') {
-                    $iframeCol = $col;
-                }
-            }
-            
-            if ($nombreCol && $iframeCol) {
-                // Migrar secciones
-                $sql = "INSERT IGNORE INTO secciones (nombre, tipo, orden) 
-                        SELECT DISTINCT `$nombreCol`, 'section', 0 
-                        FROM seccion_peliculas 
-                        WHERE `$nombreCol` IS NOT NULL AND `$nombreCol` != ''";
-                $pdo->exec($sql);
-                
-                // Migrar items
-                $sql = "INSERT IGNORE INTO seccion_items (seccion_id, iframe_id, orden)
-                        SELECT s.id, sp.`$iframeCol`, 0
-                        FROM seccion_peliculas sp
-                        JOIN secciones s ON s.nombre = sp.`$nombreCol`
-                        WHERE sp.`$iframeCol` IS NOT NULL";
-                $pdo->exec($sql);
-                
-                $mensajes[] = "Datos migrados desde seccion_peliculas";
-            }
-        }
-    } catch (Exception $e) {
-        error_log("Error migrando seccion_peliculas: " . $e->getMessage());
-    }
-    
-    try {
-        // Verificar si la tabla slider_items existe
-        $check = $pdo->query("SHOW TABLES LIKE 'slider_items'");
-        if ($check->rowCount() > 0) {
-            // Crear sección slider si no existe
-            $pdo->exec("INSERT IGNORE INTO secciones (nombre, tipo, orden) VALUES ('Destacados Slider', 'slider', 0)");
-            
-            // Obtener ID del slider
-            $stmt = $pdo->query("SELECT id FROM secciones WHERE tipo = 'slider' LIMIT 1");
-            $sliderId = $stmt->fetchColumn();
-            
-            if ($sliderId) {
-                // Migrar items del slider
-                $sql = "INSERT IGNORE INTO seccion_items (seccion_id, iframe_id, orden)
-                        SELECT $sliderId, iframe_id, orden
-                        FROM slider_items
-                        WHERE iframe_id IS NOT NULL
-                        ORDER BY orden
-                        LIMIT 5";
-                $pdo->exec($sql);
-                $mensajes[] = "Datos migrados desde slider_items";
-            }
-        }
-    } catch (Exception $e) {
-        error_log("Error migrando slider_items: " . $e->getMessage());
-    }
-    
-    try {
-        // Verificar si la tabla iframe_seccion existe
-        $check = $pdo->query("SHOW TABLES LIKE 'iframe_seccion'");
-        if ($check->rowCount() > 0) {
-            $cols = $pdo->query("SHOW COLUMNS FROM iframe_seccion")->fetchAll(PDO::FETCH_COLUMN);
-            
-            $nombreCol = null;
-            $iframeCol = null;
-            
-            foreach ($cols as $col) {
-                if (stripos($col, 'nombre') !== false) $nombreCol = $col;
-                if (stripos($col, 'iframe') !== false) $iframeCol = $col;
-            }
-            
-            if ($nombreCol && $iframeCol) {
-                $sql = "INSERT IGNORE INTO secciones (nombre, tipo, orden) 
-                        SELECT DISTINCT `$nombreCol`, 'section', 0 
-                        FROM iframe_seccion 
-                        WHERE `$nombreCol` IS NOT NULL AND `$nombreCol` != ''";
-                $pdo->exec($sql);
-                
-                $sql = "INSERT IGNORE INTO seccion_items (seccion_id, iframe_id, orden)
-                        SELECT s.id, fis.`$iframeCol`, 0
-                        FROM iframe_seccion fis
-                        JOIN secciones s ON s.nombre = fis.`$nombreCol`
-                        WHERE fis.`$iframeCol` IS NOT NULL";
-                $pdo->exec($sql);
-                
-                $mensajes[] = "Datos migrados desde iframe_seccion";
-            }
-        }
-    } catch (Exception $e) {
-        error_log("Error migrando iframe_seccion: " . $e->getMessage());
-    }
-    
-    return $mensajes;
-}
-
-// ===========================
-// CONEXIÓN Y CREACIÓN DE BD
+// CONEXIÓN Y CREACIÓN DE BD (POSTGRESQL)
 // ===========================
 function conectarBD() {
     static $pdo = null;
     if ($pdo !== null) return $pdo;
     try {
-        $pdo = new PDO("mysql:host=" . DB_HOST . ";charset=utf8mb4", DB_USER, DB_PASS, [
+        // Driver para Postgres (pgsql)
+        $dsn = "pgsql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME;
+        $pdo = new PDO($dsn, DB_USER, DB_PASS, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false
         ]);
-        $pdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-        $pdo->exec("USE `" . DB_NAME . "`");
         
-        // Tabla iframes
+        // Tabla iframes (Sintaxis adaptada a Postgres)
         $pdo->exec("CREATE TABLE IF NOT EXISTS iframes (
-            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             nombre VARCHAR(255) NOT NULL,
             poster VARCHAR(500) NOT NULL,
-            anio YEAR NOT NULL,
+            anio INTEGER NOT NULL,
             url_iframe VARCHAR(1000) NOT NULL,
-            tmdb_id INT DEFAULT NULL,
-            media_type ENUM('movie', 'tv') DEFAULT 'movie',
+            tmdb_id INTEGER DEFAULT NULL,
+            media_type VARCHAR(10) DEFAULT 'movie',
             sinopsis TEXT DEFAULT NULL,
             reparto TEXT DEFAULT NULL,
             duracion VARCHAR(50) DEFAULT NULL,
             genero VARCHAR(255) DEFAULT NULL,
-            fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_nombre (nombre),
-            INDEX idx_anio (anio),
-            INDEX idx_tmdb (tmdb_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )");
         
-        // Agregar columnas si no existen
-        $cols = $pdo->query("SHOW COLUMNS FROM iframes")->fetchAll(PDO::FETCH_COLUMN);
-        if (!in_array('genero', $cols)) $pdo->exec("ALTER TABLE iframes ADD COLUMN genero VARCHAR(255) DEFAULT NULL AFTER duracion");
-        if (!in_array('sinopsis', $cols)) $pdo->exec("ALTER TABLE iframes ADD COLUMN sinopsis TEXT DEFAULT NULL AFTER media_type");
-        if (!in_array('reparto', $cols)) $pdo->exec("ALTER TABLE iframes ADD COLUMN reparto TEXT DEFAULT NULL AFTER sinopsis");
-        if (!in_array('duracion', $cols)) $pdo->exec("ALTER TABLE iframes ADD COLUMN duracion VARCHAR(50) DEFAULT NULL AFTER reparto");
+        // Crear índices (Postgres los maneja fuera de la creación de tabla)
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_nombre ON iframes(nombre)");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_tmdb ON iframes(tmdb_id)");
         
         // Tabla secciones
         $pdo->exec("CREATE TABLE IF NOT EXISTS secciones (
-            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             nombre VARCHAR(100) NOT NULL,
-            tipo ENUM('section', 'slider') NOT NULL DEFAULT 'section',
-            orden INT DEFAULT 0,
+            tipo VARCHAR(20) NOT NULL DEFAULT 'section',
+            orden INTEGER DEFAULT 0,
             fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        )");
         
         // Tabla seccion_items
         $pdo->exec("CREATE TABLE IF NOT EXISTS seccion_items (
-            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            seccion_id INT UNSIGNED NOT NULL,
-            iframe_id INT UNSIGNED NOT NULL,
-            orden INT DEFAULT 0,
+            id SERIAL PRIMARY KEY,
+            seccion_id INTEGER NOT NULL,
+            iframe_id INTEGER NOT NULL,
+            orden INTEGER DEFAULT 0,
             FOREIGN KEY (seccion_id) REFERENCES secciones(id) ON DELETE CASCADE,
             FOREIGN KEY (iframe_id) REFERENCES iframes(id) ON DELETE CASCADE,
-            UNIQUE KEY unique_item (seccion_id, iframe_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-        
-        // Verificar si hay datos en secciones
-        $count = $pdo->query("SELECT COUNT(*) FROM secciones")->fetchColumn();
-        
-        // Si no hay secciones, intentar migrar datos antiguos
-        if ($count == 0) {
-            migrarDatosAntiguos($pdo);
-        }
+            UNIQUE (seccion_id, iframe_id)
+        )");
         
         return $pdo;
     } catch (PDOException $e) {
@@ -396,9 +283,9 @@ function conectarBD() {
     }
 }
 
-// ===========================
-// FUNCIONES TMDB API
-// ===========================
+// ... El resto de tus funciones TMDB API, Autenticación y AJAX se mantienen igual ...
+// (Para ahorrar espacio, asegúrate de mantener el resto del código original de tu config.php aquí abajo)
+
 function tmdbRequest($endpoint, $apiKey, $params = []) {
     if (empty($apiKey) || $apiKey === 'TU_API_KEY_AQUI') return ['error' => 'API Key de TMDB no configurada'];
     $params['api_key'] = $apiKey;
@@ -540,9 +427,6 @@ function obtenerClasificacionEdadTMDB($id, $mediaType, $apiKey, $countries = [])
     return null;
 }
 
-// ===========================
-// FUNCIONES DE AUTENTICACIÓN
-// ===========================
 function verificarAccesoGestion() {
     iniciarSesionSegura();
     if (isset($_SESSION['gestion_autenticado']) && $_SESSION['gestion_autenticado'] === true) {
