@@ -1,2 +1,0 @@
-# CineXperience
-movie page
